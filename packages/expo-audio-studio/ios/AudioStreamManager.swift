@@ -602,12 +602,9 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
         } else {
             let newUUID = UUID()
             recordingUUID = newUUID
-            // Apply prefix with date stamp if configured, otherwise use plain UUID
+            // Prepend prefix directly to UUID if configured
             if let prefix = recordingSettings?.filenamePrefix {
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy-MM-dd"
-                let dateString = formatter.string(from: Date())
-                baseFilename = "\(prefix)-\(dateString)_\(newUUID.uuidString)"
+                baseFilename = "\(prefix)\(newUUID.uuidString)"
             } else {
                 baseFilename = newUUID.uuidString
             }
