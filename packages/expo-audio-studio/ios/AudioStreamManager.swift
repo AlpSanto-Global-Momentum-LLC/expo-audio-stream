@@ -281,12 +281,13 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
         let previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
         NSLog("[ROUTE-CHANGE] reason=%lu prev=%@ curr=%@", reason.rawValue, previousRoute?.inputs.first?.portName ?? "none", currentInput?.portName ?? "none")
 
-        // Only handle .newDeviceAvailable (automatic device connection, e.g. AirPods).
+        // Handle .newDeviceAvailable (automatic device connection, e.g. AirPods)
+        // and .override (user changed input via iOS Control Center or system UI).
         // .oldDeviceUnavailable → handled by AudioDeviceManagerDelegate disconnection flow.
-        // .override → fired by setPreferredInput, already handled by performDeviceSwitch
-        //   from the selectInputDevice → updateAudioSessionWithCurrentSettings path.
         // .routeConfigurationChange → typically from our own configureAudioSession calls.
-        guard reason == .newDeviceAvailable else {
+        // Note: .override is also fired by our own setPreferredInput calls, but the
+        // debounce guard below (lastDeviceSwitchTime) filters those out.
+        guard reason == .newDeviceAvailable || reason == .override else {
             Logger.debug("AudioStreamManager", "[ROUTE-CHANGE] Skipping reason \(reason.rawValue)")
             return
         }
@@ -600,10 +601,14 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
         if let existingFilename = recordingSettings?.filename {
             baseFilename = existingFilename
         } else {
-            // Always create a new UUID for recording unless a filename is provided
             let newUUID = UUID()
             recordingUUID = newUUID
-            baseFilename = newUUID.uuidString
+            // Prepend prefix directly to UUID if configured
+            if let prefix = recordingSettings?.filenamePrefix {
+                baseFilename = "\(prefix)\(newUUID.uuidString)"
+            } else {
+                baseFilename = newUUID.uuidString
+            }
         }
         Logger.debug("AudioStreamManager", "Using base filename: \(baseFilename)")
         
