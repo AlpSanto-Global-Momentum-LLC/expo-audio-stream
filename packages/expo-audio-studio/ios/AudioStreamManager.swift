@@ -1919,14 +1919,18 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
         let wasRecording = isRecording
         isRecording = false
         isPaused = false
-        isPrepared = false // Reset preparation state
-        
-        // If we were only prepared but never started recording, clean up and return nil
+
+        // If we were only prepared but never started recording, clean up and return nil.
+        // cleanupPreparation() must run while isPrepared is still true so its guard passes
+        // and the AVAudioSession gets deactivated (allowing other apps to resume playback).
         if !wasRecording {
             cleanupPreparation()
-            stopping = false // Reset stopping flag
+            isPrepared = false
+            stopping = false
             return nil
         }
+
+        isPrepared = false
         
         // PERFORMANCE OPTIMIZATION: Capture current state for immediate return
         let capturedFileURL = recordingFileURL
