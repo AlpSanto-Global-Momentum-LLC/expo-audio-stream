@@ -649,14 +649,22 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
     }
     
     /// Creates a WAV header for the given data size.
-    /// - Parameter dataSize: The size of the audio data.
+    ///
+    /// Settings are passed explicitly rather than read from `self.recordingSettings`
+    /// because that property can be nil-ed out by stale stop/cleanup paths running
+    /// on background queues (see the async cleanup at the end of stopRecording).
+    /// The original force-unwrap crashed iOS recordings when a hardware-button-
+    /// triggered prepare raced a previous recording's still-draining cleanup.
+    /// - Parameters:
+    ///   - dataSize: The size of the audio data.
+    ///   - settings: The recording settings to use for the header.
     /// - Returns: A Data object containing the WAV header.
-    private func createWavHeader(dataSize: Int) -> Data {
+    private func createWavHeader(dataSize: Int, settings: RecordingSettings) -> Data {
         var header = Data()
-        
-        let sampleRate = UInt32(recordingSettings!.sampleRate)
-        let channels = UInt32(recordingSettings!.numberOfChannels)
-        let bitDepth = UInt32(recordingSettings!.bitDepth)
+
+        let sampleRate = UInt32(settings.sampleRate)
+        let channels = UInt32(settings.numberOfChannels)
+        let bitDepth = UInt32(settings.bitDepth)
         
         let blockAlign = channels * (bitDepth / 8)
         let byteRate = sampleRate * blockAlign
@@ -946,8 +954,9 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
                     }
                     // Open the handle for writing
                     self.fileHandle = try FileHandle(forWritingTo: url)
-                    // Write initial dummy header immediately
-                    let header = createWavHeader(dataSize: 0)
+                    // Write initial dummy header immediately. Pass `settings` explicitly:
+                    // self.recordingSettings can race to nil with a stale background cleanup.
+                    let header = createWavHeader(dataSize: 0, settings: settings)
                     self.fileHandle?.write(header)
                     self.totalDataSize = Int64(WAV_HEADER_SIZE) // Initialize size with header size
                     self.cachedWavFileSize = Int64(WAV_HEADER_SIZE) // Initialize cached size
