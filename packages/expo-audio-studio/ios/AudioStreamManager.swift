@@ -112,7 +112,11 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
 
     // Add the stopping flag to the class properties
     private var stopping: Bool = false
-    
+
+    // Serializes stopRecording's async teardown against a subsequent
+    // prepareRecording, which drains this queue before activating the session.
+    private let cleanupQueue = DispatchQueue(label: "com.audiostream.cleanup", qos: .utility)
+
     // Diagnostic: counts buffers received after the most recent device switch
     private var postSwitchBufferCount: Int = 0
     
@@ -649,14 +653,22 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
     }
     
     /// Creates a WAV header for the given data size.
-    /// - Parameter dataSize: The size of the audio data.
+    ///
+    /// Settings are passed explicitly rather than read from `self.recordingSettings`
+    /// because that property can be nil-ed out by stale stop/cleanup paths running
+    /// on background queues (see the async cleanup at the end of stopRecording).
+    /// The original force-unwrap crashed iOS recordings when a hardware-button-
+    /// triggered prepare raced a previous recording's still-draining cleanup.
+    /// - Parameters:
+    ///   - dataSize: The size of the audio data.
+    ///   - settings: The recording settings to use for the header.
     /// - Returns: A Data object containing the WAV header.
-    private func createWavHeader(dataSize: Int) -> Data {
+    private func createWavHeader(dataSize: Int, settings: RecordingSettings) -> Data {
         var header = Data()
-        
-        let sampleRate = UInt32(recordingSettings!.sampleRate)
-        let channels = UInt32(recordingSettings!.numberOfChannels)
-        let bitDepth = UInt32(recordingSettings!.bitDepth)
+
+        let sampleRate = UInt32(settings.sampleRate)
+        let channels = UInt32(settings.numberOfChannels)
+        let bitDepth = UInt32(settings.bitDepth)
         
         let blockAlign = channels * (bitDepth / 8)
         let byteRate = sampleRate * blockAlign
@@ -887,9 +899,13 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
     ///   - settings: The recording settings to use.
     /// - Returns: A boolean indicating if preparation was successful.
     func prepareRecording(settings: RecordingSettings) -> Bool {
+        // Drain any in-flight stopRecording cleanup before re-acquiring the
+        // session — a fast relaunch can otherwise race the previous teardown.
+        cleanupQueue.sync { }
+
         // Store settings first before doing anything else
         recordingSettings = settings
-        
+
         // Skip if already prepared or recording
         guard !isPrepared && !isRecording else {
             Logger.debug("AudioStreamManager", "Already prepared or recording in progress.")
@@ -946,8 +962,9 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
                     }
                     // Open the handle for writing
                     self.fileHandle = try FileHandle(forWritingTo: url)
-                    // Write initial dummy header immediately
-                    let header = createWavHeader(dataSize: 0)
+                    // Pass `settings` explicitly: defense-in-depth against
+                    // self.recordingSettings being nilled by stale teardown.
+                    let header = createWavHeader(dataSize: 0, settings: settings)
                     self.fileHandle?.write(header)
                     self.totalDataSize = Int64(WAV_HEADER_SIZE) // Initialize size with header size
                     self.cachedWavFileSize = Int64(WAV_HEADER_SIZE) // Initialize cached size
@@ -1963,28 +1980,23 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
             Logger.debug("Error restoring audio session after recording: \(error)")
         }
 
-        // Queue notification cleanup for background (non-critical, can be async)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
+        // Notification + remote-control teardown. None of this touches
+        // AVAudioSession or AVAudioEngine, so it stays off cleanupQueue.
+        // audioEngine.reset() must not run here — it is already called
+        // synchronously above; a second async reset would land mid-prepare.
+        if capturedShowNotification {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.mediaInfoUpdateTimer?.invalidate()
+                self.mediaInfoUpdateTimer = nil
 
-            if capturedShowNotification {
-                DispatchQueue.main.async {
-                    self.mediaInfoUpdateTimer?.invalidate()
-                    self.mediaInfoUpdateTimer = nil
+                self.notificationManager?.stopUpdates()
+                self.notificationManager = nil
 
-                    self.notificationManager?.stopUpdates()
-                    self.notificationManager = nil
-
-                    UIApplication.shared.endReceivingRemoteControlEvents()
-                    self.remoteCommandCenter?.pauseCommand.isEnabled = false
-                    self.remoteCommandCenter?.playCommand.isEnabled = false
-                    self.notificationView?.nowPlayingInfo = nil
-                }
-            }
-
-            // Reset audio engine in background
-            DispatchQueue.main.async {
-                self.audioEngine.reset()
+                UIApplication.shared.endReceivingRemoteControlEvents()
+                self.remoteCommandCenter?.pauseCommand.isEnabled = false
+                self.remoteCommandCenter?.playCommand.isEnabled = false
+                self.notificationView?.nowPlayingInfo = nil
             }
         }
         
@@ -2086,17 +2098,18 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
             compression: compression
         )
         
-        // Perform file operations asynchronously after returning result
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // Run on cleanupQueue so prepareRecording's drain barrier waits for
+        // the WAV header rewrite and state nil-out before the next session.
+        cleanupQueue.async { [weak self] in
             guard let self = self else { return }
-            
+
             // Update WAV header in background
             let finalDataChunkSize = capturedTotalDataSize - Int64(WAV_HEADER_SIZE)
             if finalDataChunkSize > 0 {
                 self.updateWavHeader(fileURL: fileURL, totalDataSize: finalDataChunkSize)
                 Logger.debug("Background: WAV header updated. Data chunk size: \(finalDataChunkSize)")
             }
-            
+
             // Cleanup
             self.recordingSettings = nil
             self.startTime = nil
