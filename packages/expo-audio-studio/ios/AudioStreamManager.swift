@@ -1221,9 +1221,14 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
     private func cleanupPreparation() {
         // Only run if prepared but not recording
         guard isPrepared && !isRecording else { return }
-        
+
         Logger.debug("Cleaning up prepared resources that weren't used")
-        
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.reset()
+
         // Remove input tap
         audioEngine.inputNode.removeTap(onBus: 0)
         
