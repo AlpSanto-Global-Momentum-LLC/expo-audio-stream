@@ -863,21 +863,27 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
             bufferSize = 1024 // Default
         }
         
-        // Validate hardware format before installing tap (#223)
+        // Validate hardware format before installing tap (#223).
+        // When the hardware format is transiently invalid (0/0) — typically during
+        // an in-flight route change before the new device has fully negotiated —
+        // we previously fell back to a format built from the user's requested
+        // sampleRate. That format almost always disagreed with whatever the
+        // hardware actually settled on by the time AVAudioEngine validated the
+        // tap, triggering an "AVAudioFormat tap mismatch" assertion crash.
+        //
+        // Pass format: nil instead so AVAudioEngine resolves the format from the
+        // bus at install time — that satisfies the framework's
+        // format.sampleRate == inputHWFormat.sampleRate requirement no matter
+        // what the hardware ends up reporting.
         if inputHardwareFormat.channelCount == 0 || inputHardwareFormat.sampleRate == 0 {
-            Logger.debug("AudioStreamManager", "Invalid hardware format: channels=\(inputHardwareFormat.channelCount), sampleRate=\(inputHardwareFormat.sampleRate). Using fallback.")
-            let fallbackSampleRate = Double(recordingSettings?.sampleRate ?? 16000)
-            let fallbackChannels = AVAudioChannelCount(recordingSettings?.numberOfChannels ?? 1)
-            guard let fallbackFormat = AVAudioFormat(standardFormatWithSampleRate: fallbackSampleRate, channels: fallbackChannels) else {
-                Logger.debug("AudioStreamManager", "Failed to create fallback format")
-                return inputHardwareFormat
-            }
-            inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: fallbackFormat, block: tapBlock)
-            Logger.debug("AudioStreamManager", "Tap installed with fallback format")
+            Logger.debug("AudioStreamManager", "Invalid hardware format: channels=\(inputHardwareFormat.channelCount), sampleRate=\(inputHardwareFormat.sampleRate). Letting AVAudioEngine resolve the format at install time.")
+            inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: nil, block: tapBlock)
+            let resolvedFormat = inputNode.outputFormat(forBus: 0)
+            Logger.debug("AudioStreamManager", "Tap installed with engine-resolved format: \(describeAudioFormat(resolvedFormat))")
             if prepareEngine {
                 audioEngine.prepare()
             }
-            return fallbackFormat
+            return resolvedFormat
         }
 
         // Install the tap with hardware format
