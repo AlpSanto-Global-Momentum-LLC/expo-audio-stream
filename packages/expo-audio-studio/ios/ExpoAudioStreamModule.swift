@@ -564,7 +564,94 @@ public class ExpoAudioStreamModule: Module, AudioStreamManagerDelegate, AudioDev
                 }
             }
         }
-        
+
+        /// Wraps a raw PCM file with a 44-byte WAV header by streaming the PCM bytes
+        /// in 4 MB chunks. Stays memory-stable for hour-long recordings, avoiding the
+        /// JS-side base64 round-trip that blocks the JS thread for tens of seconds.
+        /// - Parameters:
+        ///   - options: A dictionary containing:
+        ///     - `fileUri`: URI of the raw PCM input file (required)
+        ///     - `sampleRate`: PCM sample rate in Hz (default 16000)
+        ///     - `channels`: PCM channel count (default 1)
+        ///     - `bitDepth`: PCM bit depth (default 16)
+        ///     - `outputUri`: Optional output URI; derived from input if omitted
+        AsyncFunction("pcmToWav") { (options: [String: Any], promise: Promise) in
+            guard let fileUri = options["fileUri"] as? String,
+                  let inputUrl = URL(string: fileUri) else {
+                promise.reject("INVALID_ARGUMENTS", "Invalid file URI provided")
+                return
+            }
+
+            let sampleRate = (options["sampleRate"] as? NSNumber)?.uint32Value ?? 16000
+            let channels = (options["channels"] as? NSNumber)?.uint16Value ?? 1
+            let bitDepth = (options["bitDepth"] as? NSNumber)?.uint16Value ?? 16
+            let providedOutput = options["outputUri"] as? String
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                let outputUrl: URL
+                if let providedOutput = providedOutput, let parsed = URL(string: providedOutput) {
+                    outputUrl = parsed
+                } else {
+                    let parent = inputUrl.deletingLastPathComponent()
+                    let base = inputUrl.deletingPathExtension().lastPathComponent
+                    let derivedName = "\(base)-recovered-\(Int(Date().timeIntervalSince1970 * 1000)).wav"
+                    outputUrl = parent.appendingPathComponent(derivedName)
+                }
+
+                do {
+                    let pcmPath = inputUrl.path
+                    guard FileManager.default.fileExists(atPath: pcmPath) else {
+                        promise.reject("FILE_NOT_FOUND", "Input PCM file not found at \(pcmPath)")
+                        return
+                    }
+
+                    let attrs = try FileManager.default.attributesOfItem(atPath: pcmPath)
+                    let pcmSize = (attrs[.size] as? NSNumber)?.uint32Value ?? 0
+                    if pcmSize == 0 {
+                        promise.reject("EMPTY_INPUT", "Input PCM file is empty")
+                        return
+                    }
+
+                    let bytesPerSample = UInt16(bitDepth / 8)
+                    let blockAlign = channels * bytesPerSample
+                    let byteRate = sampleRate * UInt32(blockAlign)
+                    let header = buildWavHeader(
+                        dataSize: pcmSize,
+                        sampleRate: sampleRate,
+                        channels: channels,
+                        bitDepth: bitDepth,
+                        byteRate: byteRate,
+                        blockAlign: blockAlign
+                    )
+
+                    if FileManager.default.fileExists(atPath: outputUrl.path) {
+                        try FileManager.default.removeItem(at: outputUrl)
+                    }
+                    FileManager.default.createFile(atPath: outputUrl.path, contents: header, attributes: nil)
+
+                    let readHandle = try FileHandle(forReadingFrom: inputUrl)
+                    let writeHandle = try FileHandle(forWritingTo: outputUrl)
+                    defer {
+                        try? readHandle.close()
+                        try? writeHandle.close()
+                    }
+                    try writeHandle.seekToEnd()
+
+                    let chunkSize = 4 * 1024 * 1024
+                    while true {
+                        let chunk = readHandle.readData(ofLength: chunkSize)
+                        if chunk.isEmpty { break }
+                        writeHandle.write(chunk)
+                    }
+
+                    promise.resolve(outputUrl.absoluteString)
+                } catch {
+                    Logger.debug("ExpoAudioStreamModule", "pcmToWav failed: \(error.localizedDescription)")
+                    promise.reject("PCM_TO_WAV_FAILED", "Failed to convert PCM to WAV: \(error.localizedDescription)")
+                }
+            }
+        }
+
         /// Extracts raw PCM audio data from a file with time or byte range support
         /// - Parameters:
         ///   - options: A dictionary containing:
