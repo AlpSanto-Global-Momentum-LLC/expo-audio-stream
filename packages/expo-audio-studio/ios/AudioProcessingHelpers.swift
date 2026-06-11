@@ -673,58 +673,40 @@ func calculateCRC32(from floatArray: [Float], count: Int) -> UInt32 {
 }
 
 func createWavHeader(pcmData: Data, sampleRate: Int, channels: Int, bitDepth: Int) -> Data {
-    let headerSize = 44
-    let totalDataLen = pcmData.count + headerSize - 8
-    let bytesPerSample = bitDepth / 8
-    let byteRate = sampleRate * channels * bytesPerSample
-    let blockAlign = channels * bytesPerSample
-    
-    var header = Data(capacity: headerSize)
-    
-    // RIFF header
-    header.append(contentsOf: "RIFF".data(using: .ascii)!)
-    
-    // Total data length
-    header.append(UInt32(totalDataLen).littleEndian.data)
-    
-    // WAVE header
-    header.append(contentsOf: "WAVE".data(using: .ascii)!)
-    
-    // 'fmt ' chunk
-    header.append(contentsOf: "fmt ".data(using: .ascii)!)
-    
-    // 16 for PCM format
-    header.append(UInt32(16).littleEndian.data)
-    
-    // Format = 1 for PCM
-    header.append(UInt16(1).littleEndian.data)
-    
-    // Number of channels
-    header.append(UInt16(channels).littleEndian.data)
-    
-    // Sample rate
-    header.append(UInt32(sampleRate).littleEndian.data)
-    
-    // Byte rate
-    header.append(UInt32(byteRate).littleEndian.data)
-    
-    // Block align
-    header.append(UInt16(blockAlign).littleEndian.data)
-    
-    // Bits per sample
-    header.append(UInt16(bitDepth).littleEndian.data)
-    
-    // 'data' chunk
-    header.append(contentsOf: "data".data(using: .ascii)!)
-    
-    // Data length
-    header.append(UInt32(pcmData.count).littleEndian.data)
-    
-    // Combine header and PCM data
-    var wavData = header
+    var wavData = buildWavHeader(dataSize: UInt32(pcmData.count), sampleRate: UInt32(sampleRate), channels: UInt16(channels), bitDepth: UInt16(bitDepth))
     wavData.append(pcmData)
-    
     return wavData
+}
+
+func buildWavHeader(
+    dataSize: UInt32,
+    sampleRate: UInt32,
+    channels: UInt16,
+    bitDepth: UInt16,
+    byteRate: UInt32? = nil,
+    blockAlign: UInt16? = nil
+) -> Data {
+    let headerSize: UInt32 = 44
+    let totalDataLen = dataSize + headerSize - 8
+    let bytesPerSample = bitDepth / 8
+    let computedBlockAlign = blockAlign ?? channels * bytesPerSample
+    let computedByteRate = byteRate ?? sampleRate * UInt32(computedBlockAlign)
+
+    var header = Data(capacity: Int(headerSize))
+    header.append(contentsOf: "RIFF".data(using: .ascii)!)
+    header.append(totalDataLen.littleEndian.data)
+    header.append(contentsOf: "WAVE".data(using: .ascii)!)
+    header.append(contentsOf: "fmt ".data(using: .ascii)!)
+    header.append(UInt32(16).littleEndian.data)
+    header.append(UInt16(1).littleEndian.data)
+    header.append(channels.littleEndian.data)
+    header.append(sampleRate.littleEndian.data)
+    header.append(computedByteRate.littleEndian.data)
+    header.append(computedBlockAlign.littleEndian.data)
+    header.append(bitDepth.littleEndian.data)
+    header.append(contentsOf: "data".data(using: .ascii)!)
+    header.append(dataSize.littleEndian.data)
+    return header
 }
 
 // Extension to help with binary data conversion
