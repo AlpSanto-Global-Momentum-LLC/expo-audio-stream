@@ -72,6 +72,22 @@ class AudioDeviceManager {
         }
     }
     
+    /// Makes the parked category mixable before a passive activation (device
+    /// detection/selection) so it cannot interrupt other apps' audio, no matter
+    /// what other code parked on the shared session. Leaves an active recording
+    /// configuration (.playAndRecord) untouched and never enables a Bluetooth
+    /// HFP-capable category, so AirPods stay on A2DP.
+    private func ensureMixableCategory(_ session: AVAudioSession) throws {
+        guard session.category != .playAndRecord else { return }
+        if session.category == .playback || session.category == .multiRoute {
+            if !session.categoryOptions.contains(.mixWithOthers) {
+                try session.setCategory(session.category, mode: session.mode, options: session.categoryOptions.union(.mixWithOthers))
+            }
+        } else if session.category != .ambient {
+            try session.setCategory(.ambient, mode: .default, options: [])
+        }
+    }
+
     /// Prepares the audio session to detect available devices.
     /// When the session is already in .playAndRecord (during active recording), it
     /// preserves that configuration. Otherwise it just activates the session without
@@ -100,6 +116,7 @@ class AudioDeviceManager {
                 // AirPods into HFP mode. availableInputs is accessible with any category.
                 Logger.debug("AudioDeviceManager", "Activating session for device detection without changing category")
             }
+            try ensureMixableCategory(session)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             // Give the system a moment to detect Bluetooth devices if needed
@@ -301,6 +318,7 @@ class AudioDeviceManager {
 
         let session = AVAudioSession.sharedInstance()
         do {
+            try ensureMixableCategory(session)
             try session.setActive(true) // Ensure session is active
 
             // Find the built-in microphone port, which is typically the default fallback
@@ -349,10 +367,11 @@ class AudioDeviceManager {
         
         do {
             let session = AVAudioSession.sharedInstance()
-            
+
             // Ensure the session is active
+            try ensureMixableCategory(session)
             try session.setActive(true)
-            
+
             // For Bluetooth devices, normalize and match by prefix
             let normalizedRequestedId = normalizeBluetoothDeviceId(deviceId)
             let isBluetoothDevice = deviceId.contains(":")
@@ -427,6 +446,7 @@ class AudioDeviceManager {
 
         do {
             let session = AVAudioSession.sharedInstance()
+            try ensureMixableCategory(session)
             try session.setActive(true)
 
             let normalizedRequestedId = normalizeBluetoothDeviceId(deviceId)

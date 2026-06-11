@@ -930,7 +930,6 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
             let session = AVAudioSession.sharedInstance()
             try session.setActive(false, options: .notifyOthersOnDeactivation)
             Thread.sleep(forTimeInterval: 0.1) // Brief pause to ensure clean state
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             Logger.debug("AudioStreamManager", "Failed to reset audio session: \(error)")
             delegate?.audioStreamManager(self, didFailWithError: "Failed to reset audio session: \(error.localizedDescription)")
@@ -1985,7 +1984,7 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
         // an extra activation causes other apps to briefly resume then immediately stop.
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
             Logger.debug("Error restoring audio session after recording: \(error)")
@@ -2436,14 +2435,12 @@ class AudioStreamManager: NSObject, AudioDeviceManagerDelegate {
             options = audioSessionConfig.categoryOptions
         }
         
-        // Append necessary options for background recording if keepAwake is enabled
+        // keepAwake does not require mixable options. The caller's categoryOptions
+        // are respected as-is so a non-mixable session interrupts other apps' audio
+        // in a way iOS can auto-resume on deactivation (.notifyOthersOnDeactivation).
         if settings.keepAwake {
             Logger.debug("AudioStreamManager", "keepAwake enabled - configuring for background recording")
-            // Set the category to PlayAndRecord with proper background options
-            options.insert(.mixWithOthers)
-            // Add duckOthers to reduce volume of other apps instead of stopping them
-            options.insert(.duckOthers)
-            
+
             // Configure audio session for background audio
             do {
                 try session.setCategory(.playAndRecord, mode: .default, options: options)
